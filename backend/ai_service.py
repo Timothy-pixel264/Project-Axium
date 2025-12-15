@@ -1,7 +1,7 @@
 import json
 import os
 import re
-from typing import Dict
+from typing import Dict, List, Optional
 
 import requests
 from dotenv import load_dotenv
@@ -32,15 +32,15 @@ class AIService:
         env_path = os.path.join(backend_dir, ".env")
         load_dotenv(dotenv_path=env_path, override=False)
 
-        self.model_name = "Qwen/Qwen2.5-3B-Instruct"
+        self.model_name = "Qwen/Qwen3-4B-Instruct-2507"
         self.api_token = os.getenv("HUGGING_FACE_API")
         self.api_url = os.getenv(
             "HUGGING_FACE_API_URL",
-            f"https://api-inference.huggingface.co/models/{self.model_name}",
+            "https://router.huggingface.co/v1/chat/completions",
         )
 
-    def _call_hf(self, prompt: str, max_new_tokens: int = 256) -> str:
-        """Call Hugging Face Inference API or raise an error if invocation fails."""
+    def _call_hf(self, system_prompt: str, user_prompt: str, max_new_tokens: int = 256) -> str:
+        """Call Hugging Face Inference API using OpenAI-compatible chat format."""
         if not self.api_token:
             raise RuntimeError(
                 "HUGGING_FACE_API environment variable is not set; cannot call Hugging Face API."
@@ -50,14 +50,16 @@ class AIService:
             "Authorization": f"Bearer {self.api_token}",
             "Content-Type": "application/json",
         }
+
         payload = {
-            "inputs": prompt,
-            "parameters": {
-                "max_new_tokens": max_new_tokens,
-                "temperature": 0.7,
-                "top_p": 0.9,
-                "return_full_text": False,
-            },
+            "model": self.model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "max_tokens": max_new_tokens,
+            "temperature": 0.7,
+            "top_p": 0.9,
         }
 
         try:
@@ -65,21 +67,15 @@ class AIService:
             resp.raise_for_status()
             data = resp.json()
 
-            # HF text generation endpoints typically return a list of {generated_text: "..."}
-            if isinstance(data, list) and data and isinstance(data[0], dict):
-                text = data[0].get("generated_text")
-                if isinstance(text, str):
-                    return text.strip()
-
-            # Some endpoints may return a dict with choices or generated_text
-            if isinstance(data, dict):
-                if "generated_text" in data and isinstance(data["generated_text"], str):
-                    return data["generated_text"].strip()
-                choices = data.get("choices")
+            # OpenAI-compatible format returns choices with message content
+            if isinstance(data, dict) and "choices" in data:
+                choices = data["choices"]
                 if isinstance(choices, list) and choices:
-                    first = choices[0]
-                    if isinstance(first, dict) and isinstance(first.get("text"), str):
-                        return first["text"].strip()
+                    message = choices[0].get("message", {})
+                    if isinstance(message, dict):
+                        text = message.get("content")
+                        if isinstance(text, str):
+                            return text.strip()
 
             raise RuntimeError(f"Unexpected Hugging Face response format: {data}")
         except Exception as e:
@@ -101,9 +97,7 @@ Skills_snippets: {', '.join(target_profile.skills) if target_profile.skills else
 Education_snippets: {', '.join(target_profile.education) if target_profile.education else 'N/A'}
 """
 
-        prompt = f"""{ROAST_SYSTEM_PROMPT}
-
-CONTEXT (web‑scraped LinkedIn profile):
+        user_prompt = f"""CONTEXT (web‑scraped LinkedIn profile):
 {profile_summary}
 
 INSTRUCTION:
@@ -113,7 +107,7 @@ INSTRUCTION:
 
 Roast:"""
 
-        roast = self._call_hf(prompt, max_new_tokens=200)
+        roast = self._call_hf(ROAST_SYSTEM_PROMPT, user_prompt, max_new_tokens=200)
         return roast.strip()
 
     def review_roast(self, roast: str, target_profile: LinkedInProfile) -> Dict[str, any]:
@@ -128,9 +122,7 @@ Headline: {target_profile.headline or 'N/A'}
 Summary_or_WebScrape: {target_profile.bio or 'N/A'}
 """
 
-        prompt = f"""{JUDGE_SYSTEM_PROMPT}
-
-CONTEXT (web‑scraped LinkedIn profile):
+        user_prompt = f"""CONTEXT (web‑scraped LinkedIn profile):
 {profile_summary}
 
 ROAST:
@@ -143,7 +135,7 @@ INSTRUCTION:
 
 JSON:"""
 
-        response = self._call_hf(prompt, max_new_tokens=300)
+        response = self._call_hf(JUDGE_SYSTEM_PROMPT, user_prompt, max_new_tokens=300)
 
         # Try to extract JSON from response; on failure, raise instead of mocking.
         try:
