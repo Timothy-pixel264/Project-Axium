@@ -2,13 +2,13 @@
 name = "linkedin-roast-battle-backend"
 version = "1.0.0"
 description = "Backend API for LinkedIn Roast Battle game"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "fastapi==0.104.1",
     "uvicorn[standard]==0.24.0",
     "pydantic==2.5.0",
     "transformers==4.35.0",
-    "sentencepiece==0.1.99"
+    "sentencepiece>=0.2.0"
 ]
 
 [build-system]
