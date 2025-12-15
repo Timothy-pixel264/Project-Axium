@@ -4,10 +4,10 @@ A turn-based battle game where two players input LinkedIn profiles, AI generates
 
 ## Features
 
-- Turn-based battle system
+- Turn-based battle system with three UI stages (Setup, Battle, Victory)
 - AI-powered roast generation using Qwen2.5-3B-Instruct
-- AI-powered roast review and damage calculation
-- Real-time health tracking
+- AI-powered roast review and damage calculation (judge call)
+- Real-time health tracking with Streetfighter-style battle view
 - Beautiful, modern UI with Tailwind CSS
 
 ## Tech Stack
@@ -72,14 +72,17 @@ The frontend will be available at `http://localhost:3000`
 
 ## How to Play
 
-1. **Setup Phase**: Enter LinkedIn profile information for both players (name is required, other fields are optional)
-2. **Battle Phase**: 
-   - Players take turns generating roasts
-   - Click "Generate Roast" to create an AI-powered roast
-   - Click "Review Roast & Deal Damage" to have AI evaluate the roast and calculate damage
-   - Damage is subtracted from the target player's health
-   - Turns alternate automatically
-3. **Victory**: The first player to reach 0 HP loses, and the other player wins!
+1. **Setup Screen**: Enter both players’ names (required) and LinkedIn links (optional). Start creates a game.
+2. **Battle Screen** (Streetfighter-style): 
+   - Current player clicks **Generate Roast** (AI generates roast vs. opponent).
+   - Then click **Review Roast & Deal Damage** (AI judge scores roast and returns damage).
+   - Health bars update from backend; turns alternate automatically.
+3. **End Screen**: Shows the winner, final health, and option to play again.
+
+## AI Model Usage (per turn)
+- **Player 1 Roast Generation**: Create roast targeting Player 2.
+- **Player 2 Roast Generation**: Create roast targeting Player 1.
+- **Roast Judge**: Score the roast and return damage + brief rationale.
 
 ## Project Structure
 
@@ -114,6 +117,11 @@ Project-Axium/
 - For production, consider adding a database (Redis/PostgreSQL) for persistent game state
 - The AI model can be run locally or via Hugging Face Inference API
 - CORS is configured to allow requests from the React dev server
+
+## Frontend Screens (Next.js + Tailwind)
+- **Setup**: Dual player form (name + LinkedIn URL) and start button.
+- **Battle**: Two-column avatars, latest roasts, turn indicator, action buttons (Generate, Review/Deal Damage), and health bars bound to backend state.
+- **End**: Winner banner, quick recap, and Play Again to restart at setup.
 
 ## License
 

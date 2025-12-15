@@ -8,7 +8,9 @@ dependencies = [
     "uvicorn[standard]==0.24.0",
     "pydantic==2.5.0",
     "transformers==4.35.0",
-    "sentencepiece>=0.2.0"
+    "sentencepiece>=0.2.0",
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.1",
 ]
 
 [build-system]

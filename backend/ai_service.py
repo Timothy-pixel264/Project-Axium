@@ -1,154 +1,172 @@
 import json
+import os
 import re
 from typing import Dict
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
+
+import requests
+from dotenv import load_dotenv
 from models import LinkedInProfile
 
 
+ROAST_SYSTEM_PROMPT = (
+    "You are an AI roast generator in a turn-based LinkedIn roast battle game. "
+    "You receive noisy, web‑scraped LinkedIn profile content as context. "
+    "Write short, witty, non‑hateful roasts that target weaknesses, fluff, or buzzwords "
+    "in the target's LinkedIn presence. Keep outputs safe for a PG‑13 audience."
+)
+
+JUDGE_SYSTEM_PROMPT = (
+    "You are an impartial judge in a LinkedIn roast battle game. "
+    "Given a roast and the target's (possibly noisy) web‑scraped LinkedIn content, "
+    "return ONLY JSON with a damage score from 0‑100 and a one‑sentence explanation, "
+    "evaluating wit, relevance to the profile, and comedic impact."
+)
+
+
 class AIService:
-    """AI service for generating roasts and reviewing them using Qwen2.5-3B-Instruct"""
-    
+    """AI service for generating roasts and reviewing them using Hugging Face Inference API."""
+
     def __init__(self):
+        # Ensure backend/.env is loaded so HUGGING_FACE_API is available even when using uv
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        env_path = os.path.join(backend_dir, ".env")
+        load_dotenv(dotenv_path=env_path, override=False)
+
         self.model_name = "Qwen/Qwen2.5-3B-Instruct"
-        self.tokenizer = None
-        self.model = None
-        self._load_model()
-    
-    def _load_model(self):
-        """Load the Qwen model and tokenizer"""
+        self.api_token = os.getenv("HUGGING_FACE_API")
+        self.api_url = os.getenv(
+            "HUGGING_FACE_API_URL",
+            f"https://api-inference.huggingface.co/models/{self.model_name}",
+        )
+
+    def _call_hf(self, prompt: str, max_new_tokens: int = 256) -> str:
+        """Call Hugging Face Inference API or raise an error if invocation fails."""
+        if not self.api_token:
+            raise RuntimeError(
+                "HUGGING_FACE_API environment variable is not set; cannot call Hugging Face API."
+            )
+
+        headers = {
+            "Authorization": f"Bearer {self.api_token}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "inputs": prompt,
+            "parameters": {
+                "max_new_tokens": max_new_tokens,
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "return_full_text": False,
+            },
+        }
+
         try:
-            print(f"Loading model {self.model_name}...")
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_name,
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto" if torch.cuda.is_available() else None
-            )
-            print("Model loaded successfully!")
+            resp = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
+            resp.raise_for_status()
+            data = resp.json()
+
+            # HF text generation endpoints typically return a list of {generated_text: "..."}
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                text = data[0].get("generated_text")
+                if isinstance(text, str):
+                    return text.strip()
+
+            # Some endpoints may return a dict with choices or generated_text
+            if isinstance(data, dict):
+                if "generated_text" in data and isinstance(data["generated_text"], str):
+                    return data["generated_text"].strip()
+                choices = data.get("choices")
+                if isinstance(choices, list) and choices:
+                    first = choices[0]
+                    if isinstance(first, dict) and isinstance(first.get("text"), str):
+                        return first["text"].strip()
+
+            raise RuntimeError(f"Unexpected Hugging Face response format: {data}")
         except Exception as e:
-            print(f"Error loading model: {e}")
-            print("Falling back to mock responses for development")
-            self.model = None
-            self.tokenizer = None
-    
-    def _generate_text(self, prompt: str, max_length: int = 512) -> str:
-        """Generate text using the model"""
-        if self.model is None or self.tokenizer is None:
-            # Mock response for development/testing
-            return self._mock_response(prompt)
-        
-        try:
-            messages = [
-                {"role": "user", "content": prompt}
-            ]
-            
-            text = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            )
-            
-            model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
-            
-            generated_ids = self.model.generate(
-                model_inputs.input_ids,
-                max_new_tokens=max_length,
-                temperature=0.7,
-                top_p=0.9,
-                do_sample=True
-            )
-            
-            generated_ids = [
-                output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
-            ]
-            
-            response = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
-            return response.strip()
-        except Exception as e:
-            print(f"Error generating text: {e}")
-            return self._mock_response(prompt)
-    
-    def _mock_response(self, prompt: str) -> str:
-        """Mock response when model is not available"""
-        if "roast" in prompt.lower() and "review" not in prompt.lower():
-            return "Your LinkedIn profile screams 'I put 'synergy' in my bio unironically.'"
-        elif "review" in prompt.lower() or "damage" in prompt.lower():
-            return '{"damage": 45, "reasoning": "Moderately witty but could be sharper"}'
-        return "Mock response"
-    
+            # Bubble up so FastAPI can return a 500 to the client
+            raise RuntimeError(f"Hugging Face API error: {e}") from e
+
     def generate_roast(self, attacker_profile: LinkedInProfile, target_profile: LinkedInProfile) -> str:
-        """Generate a roast based on target profile"""
+        """Generate a roast targeting weaknesses in the opponent's LinkedIn profile.
+
+        The context is assumed to come from web‑scraped LinkedIn profile content
+        that has already been processed into structured fields.
+        """
         profile_summary = f"""
 Name: {target_profile.name}
 Headline: {target_profile.headline or 'N/A'}
-Bio: {target_profile.bio or 'N/A'}
-Experience: {', '.join(target_profile.experience) if target_profile.experience else 'N/A'}
-Skills: {', '.join(target_profile.skills) if target_profile.skills else 'N/A'}
-Education: {', '.join(target_profile.education) if target_profile.education else 'N/A'}
+Summary_or_WebScrape: {target_profile.bio or 'N/A'}
+Experience_snippets: {', '.join(target_profile.experience) if target_profile.experience else 'N/A'}
+Skills_snippets: {', '.join(target_profile.skills) if target_profile.skills else 'N/A'}
+Education_snippets: {', '.join(target_profile.education) if target_profile.education else 'N/A'}
 """
-        
-        prompt = f"""Generate a creative, witty roast based on this LinkedIn profile. Make it funny but not offensive. Focus on their job title, experience, skills, or bio. Keep it concise (1-2 sentences).
 
-LinkedIn Profile:
+        prompt = f"""{ROAST_SYSTEM_PROMPT}
+
+CONTEXT (web‑scraped LinkedIn profile):
 {profile_summary}
+
+INSTRUCTION:
+- Write a single roast (1–2 sentences).
+- Make it witty and targeted to the profile's weaknesses or cringe.
+- Do NOT include JSON or explanations, only the roast line(s).
 
 Roast:"""
-        
-        roast = self._generate_text(prompt, max_length=200)
+
+        roast = self._call_hf(prompt, max_new_tokens=200)
         return roast.strip()
-    
+
     def review_roast(self, roast: str, target_profile: LinkedInProfile) -> Dict[str, any]:
-        """Review a roast and calculate damage (0-100)"""
+        """Review a roast and calculate damage (0-100) using the LLM only.
+
+        If the LLM call or JSON parsing fails, this will raise an error so the
+        client gets a clear 500 instead of a mocked result.
+        """
         profile_summary = f"""
 Name: {target_profile.name}
 Headline: {target_profile.headline or 'N/A'}
-Bio: {target_profile.bio or 'N/A'}
+Summary_or_WebScrape: {target_profile.bio or 'N/A'}
 """
-        
-        prompt = f"""Rate this roast on a scale of 0-100 for effectiveness, creativity, and humor. Consider: wit, relevance to profile, comedic value.
 
-Target Profile:
+        prompt = f"""{JUDGE_SYSTEM_PROMPT}
+
+CONTEXT (web‑scraped LinkedIn profile):
 {profile_summary}
 
-Roast: {roast}
+ROAST:
+{roast}
 
-Return ONLY a valid JSON object with this exact format:
-{{"damage": <number 0-100>, "reasoning": "<brief explanation>"}}
+INSTRUCTION:
+- Respond with ONLY a JSON object.
+- Format: {{"damage": <integer 0-100>, "reasoning": "<brief explanation>"}}
+- Do not include any extra text before or after the JSON.
 
 JSON:"""
-        
-        response = self._generate_text(prompt, max_length=300)
-        
-        # Try to extract JSON from response
+
+        response = self._call_hf(prompt, max_new_tokens=300)
+
+        # Try to extract JSON from response; on failure, raise instead of mocking.
         try:
-            # Look for JSON object in the response
-            json_match = re.search(r'\{[^{}]*"damage"[^{}]*\}', response)
+            json_match = re.search(r"\{[^{}]*\"damage\"[^{}]*\}", response)
             if json_match:
                 result = json.loads(json_match.group())
             else:
-                # Try parsing the whole response
                 result = json.loads(response)
-            
+
             damage = int(result.get("damage", 50))
             reasoning = result.get("reasoning", "Standard roast")
-            
-            # Ensure damage is in valid range
+
             damage = max(0, min(100, damage))
-            
+
             return {
                 "damage": damage,
-                "reasoning": reasoning
+                "reasoning": reasoning,
             }
         except (json.JSONDecodeError, ValueError, KeyError) as e:
-            print(f"Error parsing review response: {e}")
-            print(f"Response was: {response}")
-            # Fallback: estimate damage based on roast length and keywords
-            damage = min(100, len(roast) // 2)
-            return {
-                "damage": damage,
-                "reasoning": "Could not parse AI response, using fallback calculation"
-            }
+            # Surface a clear error; FastAPI layer will turn this into 500.
+            raise RuntimeError(
+                f"Failed to parse LLM review response as JSON: {e}; raw response: {response}"
+            ) from e
 
 
 
