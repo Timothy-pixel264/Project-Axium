@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Union
 from enum import Enum
 
 
@@ -11,6 +11,20 @@ class LinkedInProfile(BaseModel):
     experience: Optional[List[str]] = None
     skills: Optional[List[str]] = None
     education: Optional[List[str]] = None
+    video_path: Optional[str] = None  # Path to scraping video recording
+    scraping_errors: Optional[List[dict]] = None  # Errors encountered during scraping
+
+
+class WikipediaArticle(BaseModel):
+    """Wikipedia article data structure for WikiRoast Battle"""
+    title: str  # Article title
+    content: str  # Full article content
+    intro: Optional[str] = None  # Introduction/lead section
+    headings: Optional[List[str]] = None  # Section headings
+    image_url: Optional[str] = None  # URL to main article image
+    categories: Optional[List[str]] = None  # Article categories
+    video_path: Optional[str] = None  # Path to scraping video recording
+    scraping_errors: Optional[List[dict]] = None  # Errors encountered during scraping
 
 
 class GameStatus(str, Enum):
@@ -21,8 +35,8 @@ class GameStatus(str, Enum):
 
 
 class Player(BaseModel):
-    """Player data structure"""
-    profile: LinkedInProfile
+    """Player data structure - supports both LinkedIn profiles and Wikipedia articles"""
+    profile: Union[LinkedInProfile, WikipediaArticle]
     health: int = 100
     name: str
 
@@ -67,9 +81,9 @@ class ReviewResponse(BaseModel):
 
 
 class StartGameRequest(BaseModel):
-    """Request to start a new game"""
-    player1_profile: LinkedInProfile
-    player2_profile: LinkedInProfile
+    """Request to start a new game - supports LinkedIn profiles or Wikipedia articles"""
+    player1_profile: Union[LinkedInProfile, WikipediaArticle]
+    player2_profile: Union[LinkedInProfile, WikipediaArticle]
 
 
 class StartGameResponse(BaseModel):
@@ -77,6 +91,18 @@ class StartGameResponse(BaseModel):
     game_id: str
     game_state: GameState
 
+
+class ScrapeRequest(BaseModel):
+    """Request to scrape a webpage"""
+    url: str
+
+
+class ScrapeResponse(BaseModel):
+    """Response containing scraped webpage content"""
+    url: str
+    title: Optional[str] = None
+    content: Optional[Dict[str, List]] = None  # headings, paragraphs, links
+    video_path: Optional[str] = None
 
 
 

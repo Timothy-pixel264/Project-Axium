@@ -1,11 +1,11 @@
 import json
 import os
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 import requests
 from dotenv import load_dotenv
-from models import LinkedInProfile
+from models import LinkedInProfile, WikipediaArticle
 
 
 ROAST_SYSTEM_PROMPT = (
@@ -15,11 +15,27 @@ ROAST_SYSTEM_PROMPT = (
     "in the target's LinkedIn presence. Keep outputs safe for a PG‑13 audience."
 )
 
+WIKI_ROAST_SYSTEM_PROMPT = (
+    "You are an AI roast generator in a turn-based Wikipedia roast battle game. "
+    "You receive article content as context. "
+    "Write short, witty, non‑hateful roasts that target the topic's quirks, obscurity, "
+    "or interesting contradictions in the Wikipedia article. Keep outputs safe for a PG‑13 audience."
+)
+
 JUDGE_SYSTEM_PROMPT = (
     "You are an impartial judge in a LinkedIn roast battle game. "
     "Given a roast and the target's (possibly noisy) web‑scraped LinkedIn content, "
-    "return ONLY JSON with a damage score from 0‑100 and a one‑sentence explanation, "
-    "evaluating wit, relevance to the profile, and comedic impact."
+    "return ONLY JSON with a damage score from 15-40 and a one‑sentence explanation, "
+    "evaluating wit, relevance to the profile, and comedic impact. "
+    "Damage of 15 is a weak or mediocre roast, damage of 40 is a devastating roast."
+)
+
+WIKI_JUDGE_SYSTEM_PROMPT = (
+    "You are an impartial judge in a Wikipedia roast battle game. "
+    "Given a roast and a Wikipedia article topic, "
+    "return ONLY JSON with a damage score from 15-40 and a one‑sentence explanation, "
+    "evaluating wit, relevance to the article topic, and comedic impact. "
+    "Damage of 15 is a weak or mediocre roast, damage of 40 is a devastating roast."
 )
 
 
@@ -82,13 +98,34 @@ class AIService:
             # Bubble up so FastAPI can return a 500 to the client
             raise RuntimeError(f"Hugging Face API error: {e}") from e
 
-    def generate_roast(self, attacker_profile: LinkedInProfile, target_profile: LinkedInProfile) -> str:
-        """Generate a roast targeting weaknesses in the opponent's LinkedIn profile.
+    def generate_roast(self, attacker_profile: Union[LinkedInProfile, WikipediaArticle], target_profile: Union[LinkedInProfile, WikipediaArticle]) -> str:
+        """Generate a roast targeting weaknesses in the opponent's profile or article.
 
-        The context is assumed to come from web‑scraped LinkedIn profile content
-        that has already been processed into structured fields.
+        Handles both LinkedIn profiles (with name, headline, bio, experience, skills, education)
+        and Wikipedia articles (with title, content, intro, headings, categories).
         """
-        profile_summary = f"""
+        # Check if target is a Wikipedia article
+        if isinstance(target_profile, WikipediaArticle):
+            profile_summary = f"""
+Title: {target_profile.title}
+Intro: {target_profile.intro or 'N/A'}
+Categories: {', '.join(target_profile.categories) if target_profile.categories else 'N/A'}
+Key_Sections: {', '.join(target_profile.headings[:5]) if target_profile.headings else 'N/A'}
+Content_Preview: {target_profile.content[:300] if target_profile.content else 'N/A'}
+"""
+            user_prompt = f"""CONTEXT (Wikipedia article):
+{profile_summary}
+
+INSTRUCTION:
+- Write a single roast (1–2 sentences).
+- Make it witty and targeted to the topic's quirks or oddities.
+- Do NOT include JSON or explanations, only the roast line(s).
+
+Roast:"""
+            roast = self._call_hf(WIKI_ROAST_SYSTEM_PROMPT, user_prompt, max_new_tokens=200)
+        else:
+            # LinkedIn profile
+            profile_summary = f"""
 Name: {target_profile.name}
 Headline: {target_profile.headline or 'N/A'}
 Summary_or_WebScrape: {target_profile.bio or 'N/A'}
@@ -96,8 +133,7 @@ Experience_snippets: {', '.join(target_profile.experience) if target_profile.exp
 Skills_snippets: {', '.join(target_profile.skills) if target_profile.skills else 'N/A'}
 Education_snippets: {', '.join(target_profile.education) if target_profile.education else 'N/A'}
 """
-
-        user_prompt = f"""CONTEXT (web‑scraped LinkedIn profile):
+            user_prompt = f"""CONTEXT (web‑scraped LinkedIn profile):
 {profile_summary}
 
 INSTRUCTION:
@@ -106,23 +142,34 @@ INSTRUCTION:
 - Do NOT include JSON or explanations, only the roast line(s).
 
 Roast:"""
+            roast = self._call_hf(ROAST_SYSTEM_PROMPT, user_prompt, max_new_tokens=200)
 
-        roast = self._call_hf(ROAST_SYSTEM_PROMPT, user_prompt, max_new_tokens=200)
         return roast.strip()
 
-    def review_roast(self, roast: str, target_profile: LinkedInProfile) -> Dict[str, any]:
+    def review_roast(self, roast: str, target_profile: Union[LinkedInProfile, WikipediaArticle]) -> Dict[str, any]:
         """Review a roast and calculate damage (0-100) using the LLM only.
 
+        Handles both LinkedIn profiles and Wikipedia articles.
         If the LLM call or JSON parsing fails, this will raise an error so the
         client gets a clear 500 instead of a mocked result.
         """
-        profile_summary = f"""
+        # Check if target is a Wikipedia article
+        if isinstance(target_profile, WikipediaArticle):
+            profile_summary = f"""
+Title: {target_profile.title}
+Categories: {', '.join(target_profile.categories) if target_profile.categories else 'N/A'}
+"""
+            system_prompt = WIKI_JUDGE_SYSTEM_PROMPT
+        else:
+            # LinkedIn profile
+            profile_summary = f"""
 Name: {target_profile.name}
 Headline: {target_profile.headline or 'N/A'}
 Summary_or_WebScrape: {target_profile.bio or 'N/A'}
 """
+            system_prompt = JUDGE_SYSTEM_PROMPT
 
-        user_prompt = f"""CONTEXT (web‑scraped LinkedIn profile):
+        user_prompt = f"""CONTEXT (target profile/article):
 {profile_summary}
 
 ROAST:
@@ -130,12 +177,13 @@ ROAST:
 
 INSTRUCTION:
 - Respond with ONLY a JSON object.
-- Format: {{"damage": <integer 0-100>, "reasoning": "<brief explanation>"}}
+- Format: {{"damage": <integer 15-40>, "reasoning": "<brief explanation>"}}
+- Damage must be between 15 and 40. 15 is weak/mediocre, 40 is devastating.
 - Do not include any extra text before or after the JSON.
 
 JSON:"""
 
-        response = self._call_hf(JUDGE_SYSTEM_PROMPT, user_prompt, max_new_tokens=300)
+        response = self._call_hf(system_prompt, user_prompt, max_new_tokens=300)
 
         # Try to extract JSON from response; on failure, raise instead of mocking.
         try:
@@ -145,10 +193,10 @@ JSON:"""
             else:
                 result = json.loads(response)
 
-            damage = int(result.get("damage", 50))
+            damage = int(result.get("damage", 27))  # Default to mid-range (27 is midpoint of 15-40)
             reasoning = result.get("reasoning", "Standard roast")
 
-            damage = max(0, min(100, damage))
+            damage = max(15, min(40, damage))
 
             return {
                 "damage": damage,

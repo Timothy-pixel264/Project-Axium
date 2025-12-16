@@ -1,6 +1,6 @@
 import uuid
-from typing import Dict, Optional
-from models import GameState, Player, LinkedInProfile, GameStatus
+from typing import Dict, Optional, Union
+from models import GameState, Player, LinkedInProfile, WikipediaArticle, GameStatus
 
 
 class GameManager:
@@ -9,20 +9,24 @@ class GameManager:
     def __init__(self):
         self.games: Dict[str, GameState] = {}
     
-    def create_game(self, player1_profile: LinkedInProfile, player2_profile: LinkedInProfile) -> str:
-        """Create a new game and return game ID"""
+    def create_game(self, player1_profile: Union[LinkedInProfile, WikipediaArticle], player2_profile: Union[LinkedInProfile, WikipediaArticle]) -> str:
+        """Create a new game with LinkedIn profiles or Wikipedia articles and return game ID"""
         game_id = str(uuid.uuid4())
-        
+
+        # Get the name from either profile type
+        p1_name = player1_profile.name if isinstance(player1_profile, LinkedInProfile) else player1_profile.title
+        p2_name = player2_profile.name if isinstance(player2_profile, LinkedInProfile) else player2_profile.title
+
         player1 = Player(
             profile=player1_profile,
             health=100,
-            name=player1_profile.name
+            name=p1_name
         )
-        
+
         player2 = Player(
             profile=player2_profile,
             health=100,
-            name=player2_profile.name
+            name=p2_name
         )
         
         game_state = GameState(
